@@ -14,6 +14,8 @@ import {
   fetchCommits,
   fetchRepos,
   streamChangelog,
+  saveChangelog,
+  type SavePayload,
   type Commit,
   type Repo,
 } from "@/lib/api";
@@ -54,6 +56,11 @@ export default function GenerateClient() {
   const [until, setUntil] = useState("");
   const [style, setStyle] = useState<Style>("professional");
   const [commits, setCommits] = useState<Commit[]>([]);
+  const [truncated, setTruncated] = useState(false);
+  const [saveDraft, setSaveDraft] = useState<SavePayload | null>(null);
+  const [saveState, setSaveState] = useState<
+    "idle" | "saved" | "failed" | "saving" | "incomplete"
+  >("idle");
   const [loaded, setLoaded] = useState(false);
   const [loadingCommits, setLoadingCommits] = useState(false);
   const [changelog, setChangelog] = useState("");
@@ -110,6 +117,7 @@ export default function GenerateClient() {
     requestVersion.current += 1;
     setCommits([]);
     setLoaded(false);
+    setTruncated(false);
     setLoadingCommits(false);
     setError(null);
   };
@@ -134,7 +142,8 @@ export default function GenerateClient() {
         until: isoBound(until, true),
       });
       if (version !== requestVersion.current) return;
-      setCommits(list);
+      setCommits(list.items);
+      setTruncated(list.truncated);
       setLoaded(true);
     } catch (e) {
       if (version === requestVersion.current)
@@ -158,47 +167,76 @@ export default function GenerateClient() {
       return;
     setStreaming(true);
     setChangelog("");
+    setSaveDraft(null);
+    setSaveState("idle");
     setOutputRepo(selected.fullName);
     setError(null);
     const controller = new AbortController();
     abortRef.current = controller;
+    const metadata = {
+      generationId: crypto.randomUUID(),
+      repoName: selected.fullName,
+      branch: branch || selected.defaultBranch,
+      dateFrom: isoBound(since),
+      dateTo: isoBound(until, true),
+    };
+    let content = "";
     try {
-      await streamChangelog(
+      const result = await streamChangelog(
         token,
         {
-          repoName: selected.fullName,
-          branch: branch || selected.defaultBranch,
-          dateFrom: isoBound(since),
-          dateTo: isoBound(until, true),
+          ...metadata,
           style,
           commits: commits.map(({ sha, message, author, date }) => ({
             sha,
             message,
             author,
-            date,
+            ...(date ? { date } : {}),
           })),
         },
-        (delta) => setChangelog((previous) => previous + delta),
+        (delta) => {
+          content += delta;
+          setChangelog(content);
+        },
         controller.signal,
       );
+      setSaveDraft({ ...metadata, content });
+      setSaveState(result.saved ? "saved" : "failed");
     } catch (e) {
-      if ((e as Error).name !== "AbortError")
-        setError(
-          e instanceof Error
+      setSaveState("incomplete");
+      setError(
+        controller.signal.aborted
+          ? "Generation stopped. The draft below is incomplete and has not been saved."
+          : e instanceof Error
             ? e.message
-            : "Couldn’t finish the draft. Please try again.",
-        );
+            : "Could not finish the draft.",
+      );
     } finally {
-      if (!controller.signal.aborted) setStreaming(false);
+      setStreaming(false);
     }
   };
+  const retrySave = async () => {
+    if (!token || !saveDraft) return;
+    setSaveState("saving");
+    try {
+      await saveChangelog(token, saveDraft);
+      setSaveState("saved");
+    } catch (e) {
+      setSaveState("failed");
+      setError(e instanceof Error ? e.message : "Could not save.");
+    }
+  };
+  const overBudget =
+    commits.reduce((size, commit) => size + commit.message.length, 0) > 60000;
   const canGenerate = Boolean(
     selected &&
     token &&
     commits.length > 0 &&
     !streaming &&
     !loadingCommits &&
-    !invalidDates,
+    !invalidDates &&
+    !overBudget &&
+    saveState !== "saving",
   );
 
   return (
@@ -293,13 +331,19 @@ export default function GenerateClient() {
                 ) : (
                   "No commits in this range. Try another branch or a wider date range."
                 )}
-                {commits.length === 100 && (
+                {truncated && (
                   <p className="mt-2">
-                    Showing the latest 100 commits. Narrow the dates for a more
-                    focused release.
+                    This range has more than 500 commits. Only the latest 500
+                    are included. Narrow the dates for a more focused release.
                   </p>
                 )}
               </div>
+            )}
+            {overBudget && (
+              <p role="alert" className="text-sm text-destructive">
+                These commit messages exceed the 60,000-character limit. Narrow
+                the dates before generating.
+              </p>
             )}
             {commits.length > 0 && (
               <details className="repo-picker border-t border-border pt-3">
@@ -368,6 +412,15 @@ export default function GenerateClient() {
               </>
             )}
           </Button>
+          {streaming && (
+            <Button
+              variant="outline"
+              className="mt-3 w-full"
+              onClick={() => abortRef.current?.abort()}
+            >
+              Stop generating
+            </Button>
+          )}
           <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
             {!selected
               ? "Start by choosing a repository above."
@@ -376,11 +429,35 @@ export default function GenerateClient() {
                 : "A first draft from AI. The final word is yours."}
           </p>
         </div>
-        <ChangelogOutput
-          content={changelog}
-          repoName={outputRepo || selected?.fullName}
-          streaming={streaming}
-        />
+        <div className="min-w-0">
+          {saveState === "saved" && (
+            <p role="status" className="mb-3 text-sm text-primary">
+              Saved to history.
+            </p>
+          )}
+          {(saveState === "failed" || saveState === "saving") && (
+            <Notice title="Your draft is ready. Saving needs another try.">
+              <p>
+                Keep this page open or download your draft. Retrying will not
+                generate again.
+              </p>
+              <Button
+                className="mt-3"
+                variant="outline"
+                disabled={saveState === "saving"}
+                onClick={retrySave}
+              >
+                {saveState === "saving" ? "Saving…" : "Retry saving"}
+              </Button>
+            </Notice>
+          )}
+          <ChangelogOutput
+            incomplete={saveState === "incomplete"}
+            content={changelog}
+            repoName={outputRepo || selected?.fullName}
+            streaming={streaming}
+          />
+        </div>
       </div>
     </>
   );

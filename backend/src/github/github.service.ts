@@ -2,9 +2,10 @@ import {
   Injectable,
   HttpException,
   HttpStatus,
+  BadRequestException,
   Logger,
-} from '@nestjs/common';
-import axios, { AxiosError, AxiosInstance } from 'axios';
+} from "@nestjs/common";
+import axios, { AxiosError, AxiosInstance } from "axios";
 
 export interface GithubRepo {
   id: number;
@@ -37,11 +38,11 @@ export class GithubService {
 
   private client(token: string): AxiosInstance {
     return axios.create({
-      baseURL: 'https://api.github.com',
+      baseURL: "https://api.github.com",
       headers: {
         Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
       },
       timeout: 15000,
     });
@@ -49,9 +50,12 @@ export class GithubService {
 
   async identify(token: string): Promise<string> {
     try {
-      const { data } = await this.client(token).get('/user');
+      const { data } = await this.client(token).get("/user");
       if (!Number.isSafeInteger(data.id) || data.id <= 0) {
-        throw new HttpException('Invalid GitHub identity', HttpStatus.UNAUTHORIZED);
+        throw new HttpException(
+          "Invalid GitHub identity",
+          HttpStatus.UNAUTHORIZED,
+        );
       }
       return String(data.id);
     } catch (err) {
@@ -69,13 +73,16 @@ export class GithubService {
   }
 
   /** Lists repos the authenticated user can access, most recently pushed first. */
-  async listRepos(token: string): Promise<GithubRepo[]> {
+  async listRepos(
+    token: string,
+    page = 1,
+  ): Promise<{ items: GithubRepo[]; nextPage: number | null }> {
     try {
-      const { data } = await this.client(token).get('/user/repos', {
-        params: { per_page: 100, sort: 'pushed', visibility: 'all' },
+      const { data, headers } = await this.client(token).get("/user/repos", {
+        params: { per_page: 100, page, sort: "full_name", visibility: "all" },
       });
 
-      return (data as RawRepo[]).map((r) => ({
+      const items = (data as RawRepo[]).map((r) => ({
         id: r.id,
         name: r.name,
         fullName: r.full_name,
@@ -84,34 +91,54 @@ export class GithubService {
         defaultBranch: r.default_branch,
         updatedAt: r.pushed_at ?? r.updated_at,
       }));
+      return {
+        items,
+        nextPage: /rel="next"/.test(headers.link ?? "") ? page + 1 : null,
+      };
     } catch (err) {
       throw this.translateError(err);
     }
   }
 
   /** Lists commits in a repo, optionally filtered by branch and date range. */
-  async listCommits(token: string, query: CommitQuery): Promise<GithubCommit[]> {
+  async listCommits(
+    token: string,
+    query: CommitQuery,
+  ): Promise<{ items: GithubCommit[]; truncated: boolean }> {
     const { repo, branch, since, until } = query;
     try {
-      const { data } = await this.client(token).get(
-        `/repos/${repo}/commits`,
-        {
-          params: {
-            sha: branch || undefined,
-            since: since || undefined,
-            until: until || undefined,
-            per_page: 100,
+      if (since && until && Date.parse(since) > Date.parse(until))
+        throw new BadRequestException(
+          "The end date must follow the start date.",
+        );
+      const items: GithubCommit[] = [];
+      let more = false;
+      for (let page = 1; page <= 5; page++) {
+        const { data, headers } = await this.client(token).get<RawCommit[]>(
+          `/repos/${repo}/commits`,
+          {
+            params: {
+              sha: branch || undefined,
+              since,
+              until,
+              per_page: 100,
+              page,
+            },
           },
-        },
-      );
-
-      return (data as RawCommit[]).map((c) => ({
-        sha: c.sha,
-        message: c.commit.message,
-        author: c.commit.author?.name ?? c.author?.login ?? 'unknown',
-        date: c.commit.author?.date ?? '',
-        url: c.html_url,
-      }));
+        );
+        items.push(
+          ...data.map((c) => ({
+            sha: c.sha,
+            message: c.commit.message,
+            author: c.commit.author?.name ?? c.author?.login ?? "unknown",
+            date: c.commit.author?.date ?? "",
+            url: c.html_url,
+          })),
+        );
+        more = /rel="next"/.test(headers.link ?? "");
+        if (!more) break;
+      }
+      return { items, truncated: more };
     } catch (err) {
       throw this.translateError(err);
     }
@@ -119,45 +146,46 @@ export class GithubService {
 
   /** Maps GitHub API errors into meaningful HTTP responses for the frontend. */
   private translateError(err: unknown): HttpException {
+    if (err instanceof HttpException) return err;
     if (axios.isAxiosError(err)) {
       const axErr = err as AxiosError<{ message?: string }>;
       const status = axErr.response?.status;
-      const remaining = axErr.response?.headers?.['x-ratelimit-remaining'];
+      const remaining = axErr.response?.headers?.["x-ratelimit-remaining"];
 
       if (status === 401) {
         return new HttpException(
-          'GitHub token is invalid or expired. Please reconnect GitHub.',
+          "GitHub token is invalid or expired. Please reconnect GitHub.",
           HttpStatus.UNAUTHORIZED,
         );
       }
-      if (status === 403 && remaining === '0') {
+      if (status === 403 && remaining === "0") {
         return new HttpException(
-          'GitHub API rate limit exceeded. Try again later.',
+          "GitHub API rate limit exceeded. Try again later.",
           HttpStatus.TOO_MANY_REQUESTS,
         );
       }
       if (status === 403) {
         return new HttpException(
-          'Access forbidden. The OAuth scope may not include this repository.',
+          "Access forbidden. The OAuth scope may not include this repository.",
           HttpStatus.FORBIDDEN,
         );
       }
       if (status === 404) {
         return new HttpException(
-          'Repository not found, or it is private and the token lacks access.',
+          "Repository not found, or it is private and the token lacks access.",
           HttpStatus.NOT_FOUND,
         );
       }
       this.logger.error(`GitHub API error: ${axErr.message}`);
       return new HttpException(
-        axErr.response?.data?.message ?? 'GitHub API request failed',
+        axErr.response?.data?.message ?? "GitHub API request failed",
         status ?? HttpStatus.BAD_GATEWAY,
       );
     }
 
-    this.logger.error('Unexpected GitHub error', err as Error);
+    this.logger.error("Unexpected GitHub error", err as Error);
     return new HttpException(
-      'Unexpected error contacting GitHub',
+      "Unexpected error contacting GitHub",
       HttpStatus.INTERNAL_SERVER_ERROR,
     );
   }

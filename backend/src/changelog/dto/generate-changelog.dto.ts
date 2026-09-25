@@ -1,61 +1,43 @@
-import { Type } from 'class-transformer';
+import { Type } from "class-transformer";
 import {
-  ArrayMinSize,
   ArrayMaxSize,
-  Matches,
-  IsISO8601,
+  ArrayMinSize,
   IsArray,
   IsIn,
+  IsISO8601,
   IsOptional,
   IsString,
+  IsUUID,
+  Matches,
   MaxLength,
+  MinLength,
   ValidateNested,
-} from 'class-validator';
+} from "class-validator";
 
 export class CommitDto {
-  @IsString()
-  sha!: string;
-
-  @IsString()
-  @MaxLength(2000)
-  message!: string;
-
-  @IsOptional()
-  @IsString()
-  author?: string;
-
-  @IsOptional()
-  @IsString()
-  date?: string;
+  @Matches(/^[a-f0-9]{40}$/i) sha!: string;
+  @IsString() @MinLength(1) @MaxLength(60000) message!: string;
+  @IsOptional() @IsString() @MaxLength(256) author?: string;
+  @IsOptional() @IsISO8601() date?: string;
 }
-
-export const CHANGELOG_STYLES = ['professional', 'concise', 'playful'] as const;
+export const CHANGELOG_STYLES = ["professional", "concise", "playful"] as const;
 export type ChangelogStyle = (typeof CHANGELOG_STYLES)[number];
-
-export class GenerateChangelogDto {
-  @Matches(/^[\w.-]+\/[\w.-]+$/)
-  repoName!: string;
-
-  @IsOptional()
-  @IsString()
-  branch?: string;
-
-  @IsOptional()
-  @IsISO8601()
-  dateFrom?: string;
-
-  @IsOptional()
-  @IsISO8601()
-  dateTo?: string;
-
-  @IsOptional()
-  @IsIn(CHANGELOG_STYLES)
-  style?: ChangelogStyle;
-
+export class ChangelogMetadataDto {
+  @IsUUID("4") generationId!: string;
+  @Matches(/^[\w.-]+\/[\w.-]+$/) @MaxLength(256) repoName!: string;
+  @IsOptional() @IsString() @MaxLength(256) branch?: string;
+  @IsOptional() @IsISO8601() dateFrom?: string;
+  @IsOptional() @IsISO8601() dateTo?: string;
+}
+export class GenerateChangelogDto extends ChangelogMetadataDto {
+  @IsOptional() @IsIn(CHANGELOG_STYLES) style?: ChangelogStyle;
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(500)
   @ValidateNested({ each: true })
   @Type(() => CommitDto)
   commits!: CommitDto[];
+}
+export class SaveChangelogDto extends ChangelogMetadataDto {
+  @IsString() @MinLength(1) @MaxLength(64000) content!: string;
 }

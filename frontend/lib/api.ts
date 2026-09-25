@@ -1,7 +1,7 @@
 // Client-side helpers for calling the NestJS backend. The GitHub access token
 // is forwarded in the Authorization header for GitHub-proxying endpoints.
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 export interface Repo {
   id: number;
@@ -31,6 +31,14 @@ export interface ChangelogRecord {
   created_at: string;
 }
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
+}
 async function handle<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = `Request failed (${res.status})`;
@@ -40,107 +48,166 @@ async function handle<T>(res: Response): Promise<T> {
     } catch {
       /* ignore non-JSON error bodies */
     }
-    throw new Error(message);
+    if (res.status === 401 && typeof window !== "undefined")
+      window.dispatchEvent(new Event("github-session-expired"));
+    throw new ApiError(
+      Array.isArray(message) ? message.join(" ") : message,
+      res.status,
+    );
   }
   return res.json() as Promise<T>;
 }
 
 export async function fetchRepos(token: string): Promise<Repo[]> {
-  const res = await fetch(`${API_URL}/github/repos`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  return handle<Repo[]>(res);
+  const items: Repo[] = [];
+  for (let page: number | null = 1; page !== null;) {
+    if (page > 100)
+      throw new Error(
+        "This account has more than 10,000 repositories. Repository listing cannot be completed.",
+      );
+    const result: { items: Repo[]; nextPage: number | null } = await handle(
+      await fetch(`${API_URL}/github/repos?page=${page}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    items.push(...result.items);
+    page = result.nextPage;
+  }
+  return Array.from(new Map(items.map((repo) => [repo.id, repo])).values());
 }
 
 export async function fetchCommits(
   token: string,
   params: { repo: string; branch?: string; since?: string; until?: string },
-): Promise<Commit[]> {
+): Promise<{ items: Commit[]; truncated: boolean }> {
   const qs = new URLSearchParams({ repo: params.repo });
-  if (params.branch) qs.set('branch', params.branch);
-  if (params.since) qs.set('since', params.since);
-  if (params.until) qs.set('until', params.until);
-
-  const res = await fetch(`${API_URL}/github/commits?${qs.toString()}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  return handle<Commit[]>(res);
-}
-
-export async function fetchHistory(token: string): Promise<ChangelogRecord[]> {
-  const res = await fetch(
-    `${API_URL}/history`, { headers: { Authorization: `Bearer ${token}` } },
+  if (params.branch) qs.set("branch", params.branch);
+  if (params.since) qs.set("since", params.since);
+  if (params.until) qs.set("until", params.until);
+  return handle(
+    await fetch(`${API_URL}/github/commits?${qs}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
   );
-  return handle<ChangelogRecord[]>(res);
 }
 
-export async function deleteHistory(
+export async function fetchHistory(
   token: string,
-  id: string,
-): Promise<void> {
-  const res = await fetch(
-    `${API_URL}/history/${encodeURIComponent(id)}`,
-    { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
+  cursor?: string,
+): Promise<{ items: ChangelogRecord[]; nextCursor: string | null }> {
+  return handle(
+    await fetch(
+      `${API_URL}/history${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    ),
   );
-  await handle<{ deleted: boolean }>(res);
+}
+export async function deleteHistory(token: string, id: string): Promise<void> {
+  await handle(
+    await fetch(`${API_URL}/history/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+  );
 }
 
 export interface GeneratePayload {
+  generationId: string;
   repoName: string;
   branch?: string;
   dateFrom?: string;
   dateTo?: string;
-  style?: 'professional' | 'concise' | 'playful';
-  commits: Pick<Commit, 'sha' | 'message' | 'author' | 'date'>[];
+  style?: "professional" | "concise" | "playful";
+  commits: (Pick<Commit, "sha" | "message"> &
+    Partial<Pick<Commit, "author" | "date">>)[];
 }
 
-/**
- * Streams a changelog from the backend SSE endpoint. Calls `onDelta` for each
- * text chunk and resolves when the stream completes. Rejects on error events.
- */
+export interface SaveResult {
+  saved: boolean;
+  id: string;
+  message?: string;
+}
+export type SavePayload = Omit<GeneratePayload, "commits" | "style"> & {
+  content: string;
+};
+export async function saveChangelog(
+  token: string,
+  payload: SavePayload,
+): Promise<SaveResult> {
+  return handle(
+    await fetch(`${API_URL}/changelog/save`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
 export async function streamChangelog(
   token: string,
   payload: GeneratePayload,
   onDelta: (text: string) => void,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<SaveResult> {
   const res = await fetch(`${API_URL}/changelog/generate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify(payload),
     signal,
   });
-
-  if (!res.ok || !res.body) {
-    await handle(res); // throws with a useful message
-    return;
-  }
-
+  if (!res.ok) await handle(res);
+  if (
+    !res.body ||
+    !res.headers.get("content-type")?.includes("text/event-stream")
+  )
+    throw new Error("The server did not start a changelog stream.");
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = '';
-
-  // Parse the SSE stream frame by frame (frames separated by a blank line).
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    const frames = buffer.split('\n\n');
-    buffer = frames.pop() ?? '';
-
-    for (const frame of frames) {
-      const lines = frame.split('\n');
-      const eventLine = lines.find((l) => l.startsWith('event:'));
-      const dataLine = lines.find((l) => l.startsWith('data:'));
-      if (!dataLine) continue;
-
-      const data = JSON.parse(dataLine.slice('data:'.length).trim());
-      const event = eventLine?.slice('event:'.length).trim();
-
-      if (event === 'error') throw new Error(data.message ?? 'Generation failed');
-      if (event === 'done') return;
-      if (data.delta) onDelta(data.delta);
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done)
+        throw new Error(
+          "The connection ended before completion. This draft is incomplete.",
+        );
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > 131072) throw new Error("Invalid stream frame size.");
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const lines = frame.split(/\r?\n/);
+        const event = lines
+          .find((line) => line.startsWith("event:"))
+          ?.slice(6)
+          .trim();
+        const raw = lines
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n");
+        if (!raw) continue;
+        const data = JSON.parse(raw);
+        if (event === "error")
+          throw new Error(data.message ?? "Generation failed.");
+        if (event === "done") {
+          if (
+            typeof data.saved !== "boolean" ||
+            data.id !== payload.generationId
+          )
+            throw new Error("Invalid completion response.");
+          return data as SaveResult;
+        }
+        if (typeof data.delta === "string") onDelta(data.delta);
+      }
     }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import { AnimatePresence, m } from "motion/react";
 import {
@@ -28,6 +28,9 @@ export default function HistoryPage() {
   const { data: session } = useSession();
   const token = session?.accessToken;
   const [records, setRecords] = useState<ChangelogRecord[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const version = useRef(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -35,6 +38,7 @@ export default function HistoryPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const load = useCallback(async () => {
+    const request = ++version.current;
     if (!token) {
       setLoading(false);
       setError("Your session is missing. Sign out and connect GitHub again.");
@@ -43,20 +47,52 @@ export default function HistoryPage() {
     setLoading(true);
     setError(null);
     try {
-      setRecords(await fetchHistory(token));
+      const result = await fetchHistory(token);
+      if (request !== version.current) return;
+      setRecords(result.items);
+      setNextCursor(result.nextCursor);
     } catch (e) {
+      if (request !== version.current) return;
       setError(
         e instanceof Error
           ? e.message
           : "Please check your connection and try again.",
       );
     } finally {
-      setLoading(false);
+      if (request === version.current) setLoading(false);
     }
   }, [token]);
   useEffect(() => {
+    setRecords([]);
+    setNextCursor(null);
     void load();
+    const request = version.current;
+    return () => {
+      version.current = request + 1;
+    };
   }, [load]);
+  const loadMore = async () => {
+    if (!token || !nextCursor || loadingMore) return;
+    const request = version.current;
+    setLoadingMore(true);
+    try {
+      const result = await fetchHistory(token, nextCursor);
+      if (request !== version.current) return;
+      setRecords((previous) =>
+        Array.from(
+          new Map(
+            [...previous, ...result.items].map((record) => [record.id, record]),
+          ).values(),
+        ),
+      );
+      setNextCursor(result.nextCursor);
+    } catch (e) {
+      if (request === version.current)
+        setError(e instanceof Error ? e.message : "Could not load more.");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
   const remove = async (id: string) => {
     if (!token || deleting) return;
     setDeleting(id);
@@ -288,6 +324,21 @@ export default function HistoryPage() {
                 ))}
               </AnimatePresence>
             </ul>
+          )}
+          {nextCursor && (
+            <Button
+              className="mt-6"
+              variant="outline"
+              disabled={loadingMore}
+              onClick={loadMore}
+            >
+              {loadingMore ? "Loading…" : "Load older changelogs"}
+            </Button>
+          )}
+          {nextCursor && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Search covers the changelogs loaded so far.
+            </p>
           )}
         </>
       ) : null}
