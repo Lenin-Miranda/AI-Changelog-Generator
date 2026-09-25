@@ -67,20 +67,20 @@ export async function fetchCommits(
   return handle<Commit[]>(res);
 }
 
-export async function fetchHistory(userId: string): Promise<ChangelogRecord[]> {
+export async function fetchHistory(token: string): Promise<ChangelogRecord[]> {
   const res = await fetch(
-    `${API_URL}/history?userId=${encodeURIComponent(userId)}`,
+    `${API_URL}/history`, { headers: { Authorization: `Bearer ${token}` } },
   );
   return handle<ChangelogRecord[]>(res);
 }
 
 export async function deleteHistory(
-  userId: string,
+  token: string,
   id: string,
 ): Promise<void> {
   const res = await fetch(
-    `${API_URL}/history/${id}?userId=${encodeURIComponent(userId)}`,
-    { method: 'DELETE' },
+    `${API_URL}/history/${encodeURIComponent(id)}`,
+    { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
   );
   await handle<{ deleted: boolean }>(res);
 }
@@ -91,7 +91,6 @@ export interface GeneratePayload {
   dateFrom?: string;
   dateTo?: string;
   style?: 'professional' | 'concise' | 'playful';
-  userId: string;
   commits: Pick<Commit, 'sha' | 'message' | 'author' | 'date'>[];
 }
 
@@ -100,13 +99,14 @@ export interface GeneratePayload {
  * text chunk and resolves when the stream completes. Rejects on error events.
  */
 export async function streamChangelog(
+  token: string,
   payload: GeneratePayload,
   onDelta: (text: string) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`${API_URL}/changelog/generate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(payload),
     signal,
   });

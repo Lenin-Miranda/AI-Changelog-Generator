@@ -47,6 +47,27 @@ export class GithubService {
     });
   }
 
+  async identify(token: string): Promise<string> {
+    try {
+      const { data } = await this.client(token).get('/user');
+      if (!Number.isSafeInteger(data.id) || data.id <= 0) {
+        throw new HttpException('Invalid GitHub identity', HttpStatus.UNAUTHORIZED);
+      }
+      return String(data.id);
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      throw this.translateError(err);
+    }
+  }
+
+  async assertRepoAccess(token: string, repo: string): Promise<void> {
+    try {
+      await this.client(token).get(`/repos/${repo}`);
+    } catch (err) {
+      throw this.translateError(err);
+    }
+  }
+
   /** Lists repos the authenticated user can access, most recently pushed first. */
   async listRepos(token: string): Promise<GithubRepo[]> {
     try {

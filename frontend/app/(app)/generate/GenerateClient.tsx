@@ -150,7 +150,7 @@ export default function GenerateClient() {
   const generate = async () => {
     if (
       !selected ||
-      !session?.githubId ||
+      !token ||
       commits.length === 0 ||
       streaming ||
       loadingCommits
@@ -164,13 +164,13 @@ export default function GenerateClient() {
     abortRef.current = controller;
     try {
       await streamChangelog(
+        token,
         {
           repoName: selected.fullName,
           branch: branch || selected.defaultBranch,
           dateFrom: isoBound(since),
           dateTo: isoBound(until, true),
           style,
-          userId: session.githubId,
           commits: commits.map(({ sha, message, author, date }) => ({
             sha,
             message,
@@ -194,7 +194,7 @@ export default function GenerateClient() {
   };
   const canGenerate = Boolean(
     selected &&
-    session?.githubId &&
+    token &&
     commits.length > 0 &&
     !streaming &&
     !loadingCommits &&

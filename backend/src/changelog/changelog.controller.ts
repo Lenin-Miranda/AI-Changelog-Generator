@@ -1,11 +1,13 @@
-import { Body, Controller, Post, Res } from '@nestjs/common';
+import { AuthenticatedRequest } from '../common/auth.guard';
+import { GithubService } from '../github/github.service';
+import { Body, Controller, Post, Req, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { ChangelogService } from './changelog.service';
 import { GenerateChangelogDto } from './dto/generate-changelog.dto';
 
 @Controller('changelog')
 export class ChangelogController {
-  constructor(private readonly changelog: ChangelogService) {}
+  constructor(private readonly changelog: ChangelogService, private readonly github: GithubService) {}
 
   /**
    * Streams the generated changelog as Server-Sent Events.
@@ -17,8 +19,10 @@ export class ChangelogController {
   @Post('generate')
   async generate(
     @Body() dto: GenerateChangelogDto,
+    @Req() req: AuthenticatedRequest,
     @Res() res: Response,
   ): Promise<void> {
+    await this.github.assertRepoAccess(req.identity.token, dto.repoName);
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
@@ -31,7 +35,7 @@ export class ChangelogController {
         res.write(`data: ${JSON.stringify({ delta })}\n\n`);
       }
 
-      await this.changelog.save(dto, full);
+      await this.changelog.save(req.identity.userId, dto, full);
       res.write(`event: done\ndata: ${JSON.stringify({ saved: true })}\n\n`);
     } catch (err) {
       const message =

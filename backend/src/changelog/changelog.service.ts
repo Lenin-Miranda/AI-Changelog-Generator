@@ -59,12 +59,12 @@ export class ChangelogService {
   }
 
   /** Persists a finished changelog to Supabase. No-op if Supabase is unset. */
-  async save(dto: GenerateChangelogDto, content: string): Promise<void> {
+  async save(userId: string, dto: GenerateChangelogDto, content: string): Promise<void> {
     const db = this.supabase.db;
     if (!db) return;
 
     const { error } = await db.from('changelogs').insert({
-      user_id: dto.userId,
+      user_id: userId,
       repo_name: dto.repoName,
       branch: dto.branch ?? null,
       date_from: dto.dateFrom ?? null,

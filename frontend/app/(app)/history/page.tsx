@@ -26,7 +26,7 @@ import {
 
 export default function HistoryPage() {
   const { data: session } = useSession();
-  const userId = session?.githubId;
+  const token = session?.accessToken;
   const [records, setRecords] = useState<ChangelogRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +35,7 @@ export default function HistoryPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const load = useCallback(async () => {
-    if (!userId) {
+    if (!token) {
       setLoading(false);
       setError("Your session is missing. Sign out and connect GitHub again.");
       return;
@@ -43,7 +43,7 @@ export default function HistoryPage() {
     setLoading(true);
     setError(null);
     try {
-      setRecords(await fetchHistory(userId));
+      setRecords(await fetchHistory(token));
     } catch (e) {
       setError(
         e instanceof Error
@@ -53,16 +53,16 @@ export default function HistoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [userId]);
+  }, [token]);
   useEffect(() => {
     void load();
   }, [load]);
   const remove = async (id: string) => {
-    if (!userId || deleting) return;
+    if (!token || deleting) return;
     setDeleting(id);
     setError(null);
     try {
-      await deleteHistory(userId, id);
+      await deleteHistory(token, id);
       setRecords((previous) => previous.filter((record) => record.id !== id));
       setConfirmDelete(null);
       if (open === id) setOpen(null);

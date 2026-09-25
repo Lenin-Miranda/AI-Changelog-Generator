@@ -1,6 +1,9 @@
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
+  ArrayMaxSize,
+  Matches,
+  IsISO8601,
   IsArray,
   IsIn,
   IsOptional,
@@ -30,7 +33,7 @@ export const CHANGELOG_STYLES = ['professional', 'concise', 'playful'] as const;
 export type ChangelogStyle = (typeof CHANGELOG_STYLES)[number];
 
 export class GenerateChangelogDto {
-  @IsString()
+  @Matches(/^[\w.-]+\/[\w.-]+$/)
   repoName!: string;
 
   @IsOptional()
@@ -38,23 +41,20 @@ export class GenerateChangelogDto {
   branch?: string;
 
   @IsOptional()
-  @IsString()
+  @IsISO8601()
   dateFrom?: string;
 
   @IsOptional()
-  @IsString()
+  @IsISO8601()
   dateTo?: string;
 
   @IsOptional()
   @IsIn(CHANGELOG_STYLES)
   style?: ChangelogStyle;
 
-  /** GitHub user id, forwarded by the frontend for history association. */
-  @IsString()
-  userId!: string;
-
   @IsArray()
   @ArrayMinSize(1)
+  @ArrayMaxSize(500)
   @ValidateNested({ each: true })
   @Type(() => CommitDto)
   commits!: CommitDto[];
