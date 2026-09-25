@@ -26,6 +26,15 @@ export class SupabaseService implements OnModuleInit {
     // Service key bypasses RLS; this runs server-side only, never in the browser.
     this.client = createClient(url, key, {
       auth: { persistSession: false },
+      global: {
+        fetch: (input, init) =>
+          fetch(input, {
+            ...init,
+            signal: init?.signal
+              ? AbortSignal.any([init.signal, AbortSignal.timeout(10000)])
+              : AbortSignal.timeout(10000),
+          }),
+      },
       realtime: { transport: websocketTransport },
     });
   }

@@ -57,6 +57,7 @@ export class ChangelogService {
       {
         model: "gpt-4o-mini",
         stream: true,
+        stream_options: { include_usage: true },
         temperature: 0.4,
         max_completion_tokens: 4096,
         messages: [
@@ -72,6 +73,15 @@ export class ChangelogService {
     let complete = false;
     try {
       for await (const chunk of stream) {
+        if (chunk.usage)
+          this.logger.log(
+            JSON.stringify({
+              event: "model_usage",
+              id: dto.generationId,
+              inputTokens: chunk.usage.prompt_tokens,
+              outputTokens: chunk.usage.completion_tokens,
+            }),
+          );
         const choice = chunk.choices[0];
         if (choice?.finish_reason === "stop") complete = true;
         if (choice?.finish_reason && choice.finish_reason !== "stop")

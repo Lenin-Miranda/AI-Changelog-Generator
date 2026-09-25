@@ -12,6 +12,7 @@ async function bootstrap() {
     app.get(ConfigService).get<number>("TRUST_PROXY_HOPS") ?? 0,
   );
   app.enableShutdownHooks();
+  app.useBodyParser("json", { limit: "1mb" });
 
   // The frontend (Next.js) lives on a different origin and sends the GitHub
   // token in the Authorization header, so CORS must allow that origin + header.
