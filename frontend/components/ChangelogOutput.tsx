@@ -13,6 +13,7 @@ interface Props {
   repoName?: string;
   streaming?: boolean;
   compact?: boolean;
+  incomplete?: boolean;
 }
 
 function toSlack(md: string): string {
@@ -27,12 +28,13 @@ export function ChangelogOutput({
   repoName,
   streaming = false,
   compact = false,
+  incomplete = false,
 }: Props) {
   const [view, setView] = useState<"preview" | "markdown">("preview");
   const [format, setFormat] = useState("markdown");
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState("");
-  const copyTimer = useRef<ReturnType<typeof setTimeout>>();
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(copyTimer.current), []);
   useEffect(() => {
     setCopied(false);
@@ -99,7 +101,7 @@ export function ChangelogOutput({
               Writing your draft…
             </>
           ) : content ? (
-            "Ready to review"
+            incomplete ? "Incomplete draft" : "Ready to review"
           ) : (
             "Your next release starts here"
           )}
