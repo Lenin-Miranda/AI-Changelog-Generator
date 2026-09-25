@@ -23,12 +23,17 @@ backend/    NestJS API (GitHub proxy, OpenAI, Supabase)
 | Supabase project | supabase.com | Run `backend/supabase-schema.sql` in the SQL editor |
 | NextAuth secret | `openssl rand -base64 32` | For session signing |
 
-> **Using Claude instead of OpenAI?** It's a one-file swap in
-> `backend/src/changelog/changelog.service.ts` (`generateStream`): replace the
-> OpenAI streaming call with the Anthropic SDK (e.g. `claude-haiku-4-5`). The
-> prompt is model-agnostic.
+## 2. Get the source and configure environment
 
-## 2. Configure environment
+Requires Git, Node.js and npm. Clone before running the commands below:
+
+```bash
+git clone https://github.com/Lenin-Miranda/AI-Changelog-Generator.git
+cd AI-Changelog-Generator
+```
+
+There is no root npm workspace: install backend and frontend dependencies separately.
+
 
 ```bash
 cp backend/.env.example backend/.env            # fill OPENAI_API_KEY, SUPABASE_*
@@ -90,4 +95,12 @@ Open http://localhost:3000 → **Connect GitHub** → pick a repo → load commi
   `https://<your-app>.vercel.app/api/auth/callback/github`.
 
 **Smoke test:** sign in, load a repo, generate, confirm it appears in History.
-```
+
+## Troubleshooting and checks
+
+- An OAuth callback mismatch means the GitHub app callback must match `NEXTAUTH_URL` plus `/api/auth/callback/github`.
+- If API requests fail, match `NEXT_PUBLIC_API_URL` to the backend and `FRONTEND_URL` to the browser origin.
+- Missing history tables require applying [backend/supabase-schema.sql](backend/supabase-schema.sql) to your own Supabase project.
+- Build each application from its own directory with `npm run build`. Neither package defines an automated test script.
+
+Keep `SUPABASE_SERVICE_KEY`, OAuth secrets and the OpenAI key on the server. The generated changelog should be reviewed against the selected commits before publication.
