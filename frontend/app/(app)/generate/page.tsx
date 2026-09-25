@@ -1,7 +1,7 @@
-'use client';
+"use client";
 
-import { Suspense } from 'react';
-import GenerateClient from './GenerateClient';
+import { Suspense } from "react";
+import GenerateClient from "./GenerateClient";
 
 export default function GeneratePage() {
   return (

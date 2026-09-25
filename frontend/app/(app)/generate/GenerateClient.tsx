@@ -1,73 +1,130 @@
-'use client';
+"use client";
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
-import { useSession } from 'next-auth/react';
-import { GitCommit, Loader2, Sparkles } from 'lucide-react';
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { useSession } from "next-auth/react";
+import {
+  ArrowRight,
+  Check,
+  ChevronDown,
+  GitCommitHorizontal,
+  Loader2,
+} from "lucide-react";
 import {
   fetchCommits,
   fetchRepos,
   streamChangelog,
   type Commit,
   type Repo,
-} from '@/lib/api';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { RepoSelector } from '@/components/RepoSelector';
-import { CommitRangePicker } from '@/components/CommitRangePicker';
-import { ChangelogOutput } from '@/components/ChangelogOutput';
+} from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { RepoSelector } from "@/components/RepoSelector";
+import { CommitRangePicker } from "@/components/CommitRangePicker";
+import { ChangelogOutput } from "@/components/ChangelogOutput";
+import { Notice, PageIntro } from "@/components/WorkspaceUI";
+import { SegmentedControl } from "@/components/SegmentedControl";
 
-const STYLES = ['professional', 'concise', 'playful'] as const;
-type Style = (typeof STYLES)[number];
+const STYLES = [
+  { value: "professional", label: "Professional" },
+  { value: "concise", label: "Concise" },
+  { value: "playful", label: "Playful" },
+] as const;
+type Style = (typeof STYLES)[number]["value"];
+const styleDescriptions: Record<Style, string> = {
+  professional: "Clear, polished, and ready for your customers.",
+  concise: "Just the essentials. Easy to scan and share.",
+  playful: "A little personality. The same useful details.",
+};
+const isoBound = (value: string, end = false) =>
+  value
+    ? new Date(`${value}T${end ? "23:59:59" : "00:00:00"}Z`).toISOString()
+    : undefined;
 
 export default function GenerateClient() {
   const { data: session } = useSession();
   const params = useSearchParams();
   const token = session?.accessToken;
-
+  const wantedRepo = params.get("repo");
+  const wantedBranch = params.get("branch");
   const [repos, setRepos] = useState<Repo[]>([]);
+  const [loadingRepos, setLoadingRepos] = useState(true);
   const [selected, setSelected] = useState<Repo | null>(null);
-  const [branch, setBranch] = useState('');
-  const [since, setSince] = useState('');
-  const [until, setUntil] = useState('');
-  const [style, setStyle] = useState<Style>('professional');
-
+  const [branch, setBranch] = useState("");
+  const [since, setSince] = useState("");
+  const [until, setUntil] = useState("");
+  const [style, setStyle] = useState<Style>("professional");
   const [commits, setCommits] = useState<Commit[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [loadingCommits, setLoadingCommits] = useState(false);
-  const [changelog, setChangelog] = useState('');
+  const [changelog, setChangelog] = useState("");
+  const [outputRepo, setOutputRepo] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [repoAttempt, setRepoAttempt] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
+  const requestVersion = useRef(0);
 
-  // Load repo list and preselect the one passed from the dashboard.
   useEffect(() => {
-    if (!token) return;
+    let active = true;
+    if (!token) {
+      setLoadingRepos(false);
+      return;
+    }
+    setLoadingRepos(true);
     fetchRepos(token)
       .then((list) => {
+        if (!active) return;
         setRepos(list);
-        const wanted = params.get('repo');
-        const match = wanted ? list.find((r) => r.fullName === wanted) : null;
+        const match = wantedRepo
+          ? list.find((repo) => repo.fullName === wantedRepo)
+          : null;
         if (match) {
           setSelected(match);
-          setBranch(params.get('branch') ?? match.defaultBranch);
+          setBranch(wantedBranch ?? match.defaultBranch);
         }
       })
-      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load repos'));
-  }, [token, params]);
+      .catch((e) => {
+        if (active)
+          setError(
+            e instanceof Error
+              ? e.message
+              : "Couldn’t load repositories. Please try again.",
+          );
+      })
+      .finally(() => {
+        if (active) setLoadingRepos(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [token, wantedRepo, wantedBranch, repoAttempt]);
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      requestVersion.current += 1;
+    },
+    [],
+  );
 
+  const invalidateCommits = () => {
+    requestVersion.current += 1;
+    setCommits([]);
+    setLoaded(false);
+    setLoadingCommits(false);
+    setError(null);
+  };
   const onSelectRepo = (repo: Repo) => {
+    invalidateCommits();
     setSelected(repo);
     setBranch(repo.defaultBranch);
-    setCommits([]);
-    setChangelog('');
   };
-
-  const isoBound = (d: string, end = false) =>
-    d ? new Date(`${d}T${end ? '23:59:59' : '00:00:00'}Z`).toISOString() : undefined;
-
+  const invalidDates = Boolean(since && until && since > until);
   const loadCommits = async () => {
-    if (!token || !selected) return;
+    if (!token || !selected || invalidDates) return;
+    const version = ++requestVersion.current;
     setLoadingCommits(true);
+    setLoaded(false);
+    setCommits([]);
     setError(null);
     try {
       const list = await fetchCommits(token, {
@@ -76,21 +133,35 @@ export default function GenerateClient() {
         since: isoBound(since),
         until: isoBound(until, true),
       });
+      if (version !== requestVersion.current) return;
       setCommits(list);
+      setLoaded(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load commits');
+      if (version === requestVersion.current)
+        setError(
+          e instanceof Error
+            ? e.message
+            : "Couldn’t load commits. Check the branch and try again.",
+        );
     } finally {
-      setLoadingCommits(false);
+      if (version === requestVersion.current) setLoadingCommits(false);
     }
   };
-
   const generate = async () => {
-    if (!selected || !session?.githubId || commits.length === 0) return;
+    if (
+      !selected ||
+      !session?.githubId ||
+      commits.length === 0 ||
+      streaming ||
+      loadingCommits
+    )
+      return;
     setStreaming(true);
-    setChangelog('');
+    setChangelog("");
+    setOutputRepo(selected.fullName);
     setError(null);
-    abortRef.current = new AbortController();
-
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       await streamChangelog(
         {
@@ -100,123 +171,217 @@ export default function GenerateClient() {
           dateTo: isoBound(until, true),
           style,
           userId: session.githubId,
-          commits: commits.map((c) => ({
-            sha: c.sha,
-            message: c.message,
-            author: c.author,
-            date: c.date,
+          commits: commits.map(({ sha, message, author, date }) => ({
+            sha,
+            message,
+            author,
+            date,
           })),
         },
-        (delta) => setChangelog((prev) => prev + delta),
-        abortRef.current.signal,
+        (delta) => setChangelog((previous) => previous + delta),
+        controller.signal,
       );
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
-        setError(e instanceof Error ? e.message : 'Generation failed');
-      }
+      if ((e as Error).name !== "AbortError")
+        setError(
+          e instanceof Error
+            ? e.message
+            : "Couldn’t finish the draft. Please try again.",
+        );
     } finally {
-      setStreaming(false);
+      if (!controller.signal.aborted) setStreaming(false);
     }
   };
-
-  const canGenerate = useMemo(
-    () => !!selected && commits.length > 0 && !streaming,
-    [selected, commits.length, streaming],
+  const canGenerate = Boolean(
+    selected &&
+    session?.githubId &&
+    commits.length > 0 &&
+    !streaming &&
+    !loadingCommits &&
+    !invalidDates,
   );
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Generate changelog</h1>
-        <p className="text-sm text-muted-foreground">
-          Choose a repository, a commit range, and a tone.
-        </p>
-      </div>
-
+    <>
+      <PageIntro
+        title="Good changes. Better words."
+        description="Choose what changed. We’ll help you tell the story."
+      />
       {error && (
-        <Card>
-          <CardContent className="py-4 text-sm text-destructive">{error}</CardContent>
-        </Card>
+        <Notice
+          title="Something needs another try."
+          onRetry={
+            !repos.length
+              ? () => {
+                  setError(null);
+                  setRepoAttempt((value) => value + 1);
+                }
+              : undefined
+          }
+        >
+          {error}
+        </Notice>
       )}
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>1. Repository</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <RepoSelector repos={repos} selected={selected} onSelect={onSelectRepo} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>2. Range &amp; style</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-5">
+      <div className="grid items-start gap-8 lg:grid-cols-[340px_minmax(0,1fr)] xl:gap-12">
+        <div className="min-w-0">
+          <div className="mb-5 flex items-center gap-3 border-b border-border pb-4">
+            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/10 text-xs font-medium text-primary">
+              1
+            </span>
+            <h2 className="text-sm font-medium">Choose your changes</h2>
+          </div>
+          <div className="space-y-4">
+            <div>
+              <p className="field-label">Repository</p>
+              <RepoSelector
+                repos={repos}
+                selected={selected}
+                onSelect={onSelectRepo}
+                disabled={streaming}
+                loading={loadingRepos}
+              />
+            </div>
             <CommitRangePicker
               branch={branch}
-              defaultBranch={selected?.defaultBranch ?? 'main'}
+              defaultBranch={selected?.defaultBranch ?? "main"}
               since={since}
               until={until}
-              onChange={(n) => {
-                if (n.branch !== undefined) setBranch(n.branch);
-                if (n.since !== undefined) setSince(n.since);
-                if (n.until !== undefined) setUntil(n.until);
+              disabled={streaming}
+              onChange={(next) => {
+                invalidateCommits();
+                if (next.branch !== undefined) setBranch(next.branch);
+                if (next.since !== undefined) setSince(next.since);
+                if (next.until !== undefined) setUntil(next.until);
               }}
             />
-
-            <div className="space-y-1.5">
-              <span className="text-sm text-muted-foreground">Tone</span>
-              <div className="flex gap-2">
-                {STYLES.map((s) => (
-                  <Button
-                    key={s}
-                    type="button"
-                    size="sm"
-                    variant={style === s ? 'primary' : 'outline'}
-                    onClick={() => setStyle(s)}
-                    className="capitalize"
-                  >
-                    {s}
-                  </Button>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <Button variant="outline" onClick={loadCommits} disabled={!selected || loadingCommits}>
-                {loadingCommits ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <GitCommit className="h-4 w-4" />
-                )}
-                Load commits
-              </Button>
-              {commits.length > 0 && (
-                <span className="text-sm text-muted-foreground">
-                  {commits.length} commit{commits.length === 1 ? '' : 's'} found
-                </span>
-              )}
-            </div>
-
-            <Button onClick={generate} disabled={!canGenerate} className="w-full">
-              {streaming ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+            {invalidDates && (
+              <p role="alert" className="text-sm text-destructive">
+                The end date needs to be on or after the start date.
+              </p>
+            )}
+            <Button
+              variant="outline"
+              onClick={loadCommits}
+              className="w-full"
+              disabled={
+                !selected || loadingCommits || streaming || invalidDates
+              }
+            >
+              {loadingCommits ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
               ) : (
-                <Sparkles className="h-4 w-4" />
+                <GitCommitHorizontal className="h-4 w-4" aria-hidden="true" />
               )}
-              Generate changelog
+              {loadingCommits
+                ? "Finding your commits…"
+                : loaded
+                  ? "Reload commits"
+                  : "Load commits"}
             </Button>
-          </CardContent>
-        </Card>
+            {loaded && (
+              <div
+                role="status"
+                className="!mt-3 text-xs leading-relaxed text-muted-foreground"
+              >
+                {commits.length ? (
+                  <span className="flex items-center gap-1.5 text-primary">
+                    <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                    {commits.length}{" "}
+                    {commits.length === 1 ? "commit" : "commits"} ready to turn
+                    into a story.
+                  </span>
+                ) : (
+                  "No commits in this range. Try another branch or a wider date range."
+                )}
+                {commits.length === 100 && (
+                  <p className="mt-2">
+                    Showing the latest 100 commits. Narrow the dates for a more
+                    focused release.
+                  </p>
+                )}
+              </div>
+            )}
+            {commits.length > 0 && (
+              <details className="repo-picker border-t border-border pt-3">
+                <summary className="flex min-h-9 cursor-pointer items-center justify-between text-xs text-muted-foreground">
+                  Review selected commits
+                  <ChevronDown
+                    className="picker-chevron h-3.5 w-3.5"
+                    aria-hidden="true"
+                  />
+                </summary>
+                <ul className="mt-2 max-h-52 space-y-3 overflow-y-auto py-2">
+                  {commits.map((commit) => (
+                    <li key={commit.sha} className="flex items-start gap-2">
+                      <GitCommitHorizontal
+                        className="mt-0.5 h-3.5 w-3.5 text-primary"
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0">
+                        <p className="break-words text-xs leading-relaxed">
+                          {commit.message.split("\n")[0]}
+                        </p>
+                        <span className="font-mono text-[11px] text-muted-foreground">
+                          {commit.sha.slice(0, 7)}
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+          <div className="mb-5 mt-6 flex items-center gap-3 border-b border-border pb-4">
+            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/10 text-xs font-medium text-primary">
+              2
+            </span>
+            <h2 className="text-sm font-medium">Make it sound like you</h2>
+          </div>
+          <div>
+            <p className="field-label">Writing style</p>
+            <SegmentedControl
+              label="Writing style"
+              value={style}
+              onChange={setStyle}
+              options={STYLES}
+              disabled={streaming}
+            />
+            <p className="mt-3 min-h-8 text-xs leading-relaxed text-muted-foreground">
+              {styleDescriptions[style]}
+            </p>
+          </div>
+          <Button
+            className="mt-4 w-full"
+            size="lg"
+            onClick={generate}
+            disabled={!canGenerate}
+          >
+            {streaming ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                Writing your changelog…
+              </>
+            ) : (
+              <>
+                Generate changelog
+                <ArrowRight className="ml-auto h-4 w-4" aria-hidden="true" />
+              </>
+            )}
+          </Button>
+          <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
+            {!selected
+              ? "Start by choosing a repository above."
+              : !loaded
+                ? "Load your commits to unlock the first draft."
+                : "A first draft from AI. The final word is yours."}
+          </p>
+        </div>
+        <ChangelogOutput
+          content={changelog}
+          repoName={outputRepo || selected?.fullName}
+          streaming={streaming}
+        />
       </div>
-
-      <ChangelogOutput
-        content={changelog}
-        repoName={selected?.fullName}
-        streaming={streaming}
-      />
-    </div>
+    </>
   );
 }
